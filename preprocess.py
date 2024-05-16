@@ -56,9 +56,9 @@ fsnames = ["Background"
 seed(0)
 
 # Add your ATLAS data paths here (or list of whatever stroke label niftis you have)
-atlas_train_txt = "/home/lchalcroft/git/lab-vae/atlas_train.txt"
-atlas_val_txt = "/home/lchalcroft/git/lab-vae/atlas_val.txt"
-
+atlas_train_txt = "/your/path/atlas_train.txt"
+atlas_val_txt = "/your/path/atlas_val.txt"
+oasis_path = "/your/path/here/"
 
 def printshape(x):
     print(x.shape)
@@ -75,7 +75,7 @@ def get_loaders(
     lowres=False,
     ptch=128,
 ):
-    train_files = glob.glob(os.path.join("/home/lchalcroft/Data/OASIS/liamchalcroft-20220907_161935/OAS*/OAS*_Freesurfer*/DATA/OAS*/mri/mni_1mm_healthy_symmetric.nii.gz"))
+    train_files = glob.glob(os.path.join(oasis_path, "OAS*/OAS*_Freesurfer*/DATA/OAS*/mri/mni_1mm_healthy_symmetric.nii.gz"))
     train_dict = [
         {"healthy": f, "label": f.replace("healthy_symmetric", "mb_labels")}
         for f in train_files
