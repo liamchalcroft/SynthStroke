@@ -1,83 +1,191 @@
-# 🧠 SynthStroke: Deep Learning Stroke Lesion Segmentation
+<div align="center">
 
-Python implementation of "Synthetic Data for Robust Stroke Segmentation"
+# SynthStroke
+### Deep Learning Stroke Lesion Segmentation with Synthetic Data
 
-## 🛠️ Installation
+[![Paper](https://img.shields.io/badge/Paper-MELBA%202025-blue?style=for-the-badge&logo=arxiv)](http://dx.doi.org/10.59275/j.melba.2025-f3g6)
+[![SPM Toolbox](https://img.shields.io/badge/SPM-Toolbox-orange?style=for-the-badge&logo=github)](https://github.com/liamchalcroft/SynthStrokeSPM)
+[![Python](https://img.shields.io/badge/Python-3.10+-green?style=for-the-badge&logo=python)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
 
-1. Clone the repository:
+*Python implementation of "[Synthetic Data for Robust Stroke Segmentation](http://dx.doi.org/10.59275/j.melba.2025-f3g6)" published in Machine Learning for Biomedical Imaging (MELBA) 2025.*
+
+</div>
+
+---
+
+## About
+
+This repository contains the implementation of our MELBA 2025 paper on synthetic data generation for stroke lesion segmentation. The method uses synthetic data to improve model generalization across different imaging protocols and patient populations.
+
+**Features:**
+- Synthetic data generation pipeline using healthy brain MRI
+- Multi-tissue segmentation (lesions and healthy brain tissue)
+- Mixed precision training with configurable loss functions
+- Test-time augmentation for inference
+
+**Paper**: Chalcroft, L., Pappas, I., Price, C. J., & Ashburner, J. (2025). [Synthetic Data for Robust Stroke Segmentation](http://dx.doi.org/10.59275/j.melba.2025-f3g6). *Machine Learning for Biomedical Imaging*, 3, 317–346.
+
+---
+
+## Installation
+
+### Prerequisites
+- Python 3.10+
+- CUDA-capable GPU (recommended)
+- 8GB+ RAM
+
+### Installation
+
+1. **Clone the repository**
    ```bash
    git clone https://github.com/username/synthstroke.git
    cd synthstroke
    ```
 
-2. Create a conda environment (recommended):
+2. **Set up environment**
    ```bash
    conda create -n synthstroke python=3.10
    conda activate synthstroke
    ```
 
-3. Install dependencies:
+3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-## 🚀 Usage
+---
 
-### Command Line Interface
+## Usage
+
+### Training Models
+
+<details>
+<summary><b>Baseline Model (Real Data Only)</b></summary>
+
+Train a baseline model using only real stroke imaging data:
+
 ```bash
-# Training baseline model
-python train.py --name baseline_model \ # model name for folder + wandb
-                --logdir ./ \ # parent folder to write experiments. will create new folder {logdir}/{name}/
-                --baseline \ # tell training script to use the baseline dataloader (i.e. real images)
-                --l2 50 \ # train using L2 loss for first 50 epochs
-                --patch 128 \ # patch size for random crops in training
-                --amp \ # auto-mixed precision - should make training faster + allow larger batch size
-                --epochs 500 \ # number of epochs
-                --epoch_length 200 \ # number of iters per epoch
-                --lr 0.001 \ # initial learning rate
-                --val_interval 2 \ # save weights and calculate val dice every 2 epochs
-
-# Train fancy Synth model
-python train.py --name fancy_synth_model \ # model name for folder + wandb
-                --logdir ./ \ # parent folder to write experiments. will create new folder {logdir}/{name}/
-                --mbhealthy \ # tell training script to use MultiBrain healthy labels
-                --fade \ # use INU fields to mimic penumbra within lesion masks
-                --lesion_weight 2 \ # upweight lesion class by 2 relative to healthy tissue in seg loss
-                --l2 50 \ # train using L2 loss for first 50 epochs
-                --patch 128 \ # patch size for random crops in training
-                --amp \ # auto-mixed precision - should make training faster + allow larger batch size
-                --epochs 500 \ # number of epochs
-                --epoch_length 200 \ # number of iters per epoch
-                --lr 0.001 \ # initial learning rate
-                --val_interval 2 \ # save weights and calculate val dice every 2 epochs
-
-# Test (infer) fancy Synth model on new data - this does not require ground truth data
-python test.py --weights ./fancy_synth_model/checkpoint.pt \ # path to our model trained in previous script
-               --tta \ # use test-time augmentation when predicting
-               --mb \ # predict multi-brain labels (this determines the out channels in the model so please set this if used in training, even if you don't want healthy labels)
-               --patch 128 \ # same size we used in training - will use Sliding Window Inferer
-               --savedir /my/output/data/folder/ \ # folder to write predictions to
-               --files /my/input/data/folder/*.nii.gz \ # regex to generate list of files. can also be a path to a .txt containing a single column of file paths
+python train.py \
+    --name baseline_model \
+    --logdir ./ \
+    --baseline \
+    --l2 50 \
+    --patch 128 \
+    --amp \
+    --epochs 500 \
+    --epoch_length 200 \
+    --lr 0.001 \
+    --val_interval 2
 ```
 
-## 🏋️ Weights
+**Parameters:**
+- `--baseline`: Use real stroke images (no synthetic data)
+- `--l2 50`: L2 loss for first 50 epochs, then switches to Dice loss
+- `--patch 128`: Random crop size for training patches
+- `--amp`: Enable automatic mixed precision training
+- `--val_interval 2`: Validate and save weights every 2 epochs
 
-Pre-trained model weights will be available for download soon. Please check back later or watch this repository for updates.
+</details>
 
-The weights will include:
-- Baseline model trained on real stroke data
-- SynthStroke model trained with synthetic data augmentation
+<details>
+<summary><b>SynthStroke Model (With Synthetic Data)</b></summary>
 
-## 🆘 Support
+Train the model with synthetic data augmentation:
 
-For issues, questions, or contributions, please open an issue on the GitHub repository.
+```bash
+python train.py \
+    --name synthstroke_model \
+    --logdir ./ \
+    --mbhealthy \
+    --fade \
+    --lesion_weight 2 \
+    --l2 50 \
+    --patch 128 \
+    --amp \
+    --epochs 500 \
+    --epoch_length 200 \
+    --lr 0.001 \
+    --val_interval 2
+```
 
-## 📚 Citation
+**Key Features:**
+- `--mbhealthy`: Enable MultiBrain healthy tissue segmentation
+- `--fade`: Apply intensity non-uniformity fields to simulate penumbra
+- `--lesion_weight 2`: Increase lesion class weight for better sensitivity
+
+</details>
+
+### Model Inference
+
+<details>
+<summary><b>Prediction on New Data</b></summary>
+
+Run inference on new stroke MRI scans:
+
+```bash
+python test.py \
+    --weights ./synthstroke_model/checkpoint.pt \
+    --tta \
+    --mb \
+    --patch 128 \
+    --savedir /path/to/output/ \
+    --files "/path/to/input/*.nii.gz"
+```
+
+**Options:**
+- `--tta`: Enable test-time augmentation
+- `--mb`: Output multi-brain tissue labels alongside lesions
+- `--files`: Path pattern or text file with input paths
+
+</details>
+
+### SPM Integration
+
+For MATLAB/SPM users, check out our **[SPM Toolbox](https://github.com/liamchalcroft/SynthStrokeSPM)** for seamless integration with SPM preprocessing pipelines.
+
+---
+
+## Pre-trained Models
+
+| Model | Description | Status |
+|-------|-------------|--------|
+| **SynthStroke** | Model trained with synthetic data | Coming Soon |
+| **Baseline** | Model trained on real data only | Coming Soon |
+
+Pre-trained weights will be made available.
+
+---
+
+## Support
+
+For issues or questions, please [open an issue](https://github.com/username/synthstroke/issues) on GitHub.
+
+---
+
+## Citation
 
 If you use SynthStroke in your research, please cite:
 
-Chalcroft, L., Pappas, I., Price, C. J., & Ashburner, J. (2024). Synthetic Data for Robust Stroke Segmentation. arXiv preprint arXiv:2404.01946. https://arxiv.org/abs/2404.01946
+```bibtex
+@article{Chalcroft2025,
+  title = {Synthetic Data for Robust Stroke Segmentation},
+  volume = {3},
+  ISSN = {2766-905X},
+  url = {http://dx.doi.org/10.59275/j.melba.2025-f3g6},
+  DOI = {10.59275/j.melba.2025-f3g6},
+  number = {August 2025},
+  journal = {Machine Learning for Biomedical Imaging},
+  publisher = {Machine Learning for Biomedical Imaging},
+  author = {Chalcroft, Liam and Pappas, Ioannis and Price, Cathy J. and Ashburner, John},
+  year = {2025},
+  month = aug,
+  pages = {317–346}
+}
+```
 
-## 📜 License
+---
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
