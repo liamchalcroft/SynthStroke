@@ -22,7 +22,10 @@ This repository contains the implementation of our MELBA 2025 paper on synthetic
 - Synthetic data generation pipeline using healthy brain MRI
 - Multi-tissue segmentation (lesions and healthy brain tissue)
 - Mixed precision training with configurable loss functions
-- Test-time augmentation for inference
+- Test-time augmentation (TTA) for improved inference accuracy
+- Hugging Face Hub integration with `PyTorchModelHubMixin`
+- 6 pre-trained models available for immediate use
+- Easy model loading and inference via `synthstroke_model.py`
 
 **Paper**: Chalcroft, L., Pappas, I., Price, C. J., & Ashburner, J. (2025). [Synthetic Data for Robust Stroke Segmentation](http://dx.doi.org/10.59275/j.melba.2025-f3g6). *Machine Learning for Biomedical Imaging*, 3, 317–346.
 
@@ -39,7 +42,7 @@ This repository contains the implementation of our MELBA 2025 paper on synthetic
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/username/synthstroke.git
+   git clone https://github.com/liamchalcroft/synthstroke.git
    cd synthstroke
    ```
 
@@ -146,20 +149,122 @@ For MATLAB/SPM users, check out our **[SPM Toolbox](https://github.com/liamchalc
 
 ---
 
+## SynthStroke Model Library
+
+The `synthstroke_model.py` file provides a complete Python interface for using our models:
+
+### Key Features
+
+- **PyTorchModelHubMixin Integration**: Seamless loading from Hugging Face Hub
+- **Multiple Model Variants**: Support for all 6 model types (baseline, synth, synth_pseudo, synth_plus, qatlas, qsynth)
+- **Test-Time Augmentation**: Built-in flip-based TTA for improved accuracy
+- **Automatic Device Handling**: Smart GPU/CPU device management
+- **Input Validation**: Robust error checking and validation
+- **Model Information**: Detailed metadata and parameter counts
+
+### Installation
+
+The model library is included in this repository and requires the same dependencies as the training code.
+
+---
+
 ## Pre-trained Models
 
-| Model | Description | Status |
-|-------|-------------|--------|
-| **SynthStroke** | Model trained with synthetic data | Coming Soon |
-| **Baseline** | Model trained on real data only | Coming Soon |
+| Model | Description | Hugging Face |
+|-------|-------------|--------------|
+| **SynthStroke Baseline** | Model trained on real ATLAS T1w data | [🤗 synthstroke-baseline](https://huggingface.co/liamchalcroft/synthstroke-baseline) |
+| **SynthStroke Synth** | Multi-tissue segmentation with synthetic data | [🤗 synthstroke-synth](https://huggingface.co/liamchalcroft/synthstroke-synth) |
+| **SynthStroke SynthPseudo** | Synthetic data + pseudo-label augmentation | [🤗 synthstroke-synth-pseudo](https://huggingface.co/liamchalcroft/synthstroke-synth-pseudo) |
+| **SynthStroke SynthPlus** | Synthetic data + real multi-dataset training | [🤗 synthstroke-synth-plus](https://huggingface.co/liamchalcroft/synthstroke-synth-plus) |
+| **SynthStroke qATLAS** | qMRI-based model trained on synthetic parameters | [🤗 synthstroke-qatlas](https://huggingface.co/liamchalcroft/synthstroke-qatlas) |
+| **SynthStroke qSynth** | qMRI-constrained synthetic data training | [🤗 synthstroke-qsynth](https://huggingface.co/liamchalcroft/synthstroke-qsynth) |
 
-Pre-trained weights will be made available.
+### Using Pre-trained Models
+
+The `synthstroke_model.py` provides easy access to all pre-trained models using Hugging Face's `PyTorchModelHubMixin`:
+
+#### Quick Start
+
+```python
+import torch
+from synthstroke_model import SynthStrokeModel
+
+# Load any model from Hugging Face Hub
+model = SynthStrokeModel.from_pretrained("liamchalcroft/synthstroke-baseline")
+
+# Prepare your MRI data (T1-weighted, shape: [batch, 1, H, W, D])
+mri_volume = torch.randn(1, 1, 192, 192, 192)
+
+# Run inference with optional Test-Time Augmentation
+predictions = model.predict_segmentation(mri_volume, use_tta=True)
+
+# For baseline model: get lesion probability map (channel 1)
+lesion_probs = predictions[:, 1]
+
+# For multi-tissue models (synth, synth_pseudo, synth_plus, qsynth):
+# Get all tissue probability maps
+background = predictions[:, 0]    # Background
+gray_matter = predictions[:, 1]   # Gray Matter
+white_matter = predictions[:, 2]  # White Matter
+partial_volume = predictions[:, 3]  # Gray/White Partial Volume
+csf = predictions[:, 4]          # Cerebro-Spinal Fluid
+stroke = predictions[:, 5]       # Stroke Lesion
+```
+
+#### Model Information
+
+```python
+# Get detailed model information
+info = model.get_model_info()
+print(f"Model type: {info['model_type']}")
+print(f"Input channels: {info['input_channels']}")
+print(f"Output channels: {info['output_channels']}")
+print(f"TTA support: {info['tta_support']}")
+print(f"Parameters: {info['parameters']:,}")
+```
+
+#### Available Model Configurations
+
+```python
+from synthstroke_model import (
+    create_baseline_model,      # 2-class: Background + Stroke
+    create_synth_model,         # 6-class: Multi-tissue + Stroke
+    create_synth_pseudo_model,  # 6-class: With pseudo-labels
+    create_synth_plus_model,    # 6-class: Multi-dataset training
+    create_qatlas_model,        # 2-class: qMRI-based
+    create_qsynth_model         # 6-class: qMRI-constrained
+)
+
+# Create models locally (without downloading from Hub)
+baseline_model = create_baseline_model()
+synth_model = create_synth_model()
+```
+
+#### Test-Time Augmentation (TTA)
+
+All models support flip-based TTA for improved inference accuracy:
+
+```python
+# Enable TTA for more robust predictions
+predictions_with_tta = model.predict_segmentation(mri_volume, use_tta=True)
+# This uses 8 augmentations (original + 7 flipped versions) and averages results
+```
+
+### Model Architecture Details
+
+- **Framework**: MONAI UNet with PyTorch
+- **Input**: 3D MRI volumes (T1-weighted for most models, qMRI parameters for qATLAS/qSynth)
+- **Architecture**: 3D UNet with configurable channels and strides
+- **Training**: Mixed precision (AMP) with custom loss functions
+- **Inference**: Optional Test-Time Augmentation support
+
+For detailed model specifications, see the individual model cards on Hugging Face Hub.
 
 ---
 
 ## Support
 
-For issues or questions, please [open an issue](https://github.com/username/synthstroke/issues) on GitHub.
+For issues or questions, please [open an issue](https://github.com/liamchalcroft/synthstroke/issues) on GitHub.
 
 ---
 
