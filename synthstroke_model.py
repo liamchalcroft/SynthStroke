@@ -3,6 +3,7 @@ SynthStroke model wrapper for Hugging Face Hub integration.
 """
 import torch
 from monai.networks.nets import UNet
+from safetensors.torch import save_file, load_file
 from huggingface_hub import PyTorchModelHubMixin
 import json
 from typing import Dict, Any, Optional
@@ -184,27 +185,23 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
     @classmethod
     def from_checkpoint(cls, checkpoint_path: str, config: Optional[Dict[str, Any]] = None):
         """
-        Load model from a .pt checkpoint file.
-        
+        Load model from a checkpoint file (.pt or .safetensors).
+
         Args:
-            checkpoint_path: Path to the .pt checkpoint file
+            checkpoint_path: Path to the checkpoint file (.pt or .safetensors)
             config: Optional configuration dictionary
-            
+
         Returns:
             SynthStrokeModel instance
         """
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        
-        # Extract model state dict
-        if "net" in checkpoint:
-            state_dict = checkpoint["net"]
-        else:
-            state_dict = checkpoint
-        
+
+        state_dict = load_file(checkpoint_path)
+        print(f"✅ Loaded checkpoint from secure safetensors: {checkpoint_path}")
+
         # Create model instance
         model = cls(config=config)
         model.load_state_dict(state_dict)
-        
+
         return model
     
     def get_config(self):
@@ -244,24 +241,11 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
     
     def save_pretrained(self, save_directory: str, **kwargs):
         """Save model and configuration to directory."""
-        # Import safetensors for safe model saving
-        try:
-            from safetensors.torch import save_file
-            use_safetensors = True
-        except ImportError:
-            use_safetensors = False
-            print("⚠️  safetensors not available, falling back to pickle. Install with: pip install safetensors")
 
-        # Save model weights
-        if use_safetensors:
-            # Save in safetensors format (secure)
-            state_dict = self.state_dict()
-            safetensors_path = f"{save_directory}/model.safetensors"
-            save_file(state_dict, safetensors_path)
-            print(f"✅ Saved model weights in safetensors format: {safetensors_path}")
-        else:
-            # Fallback to PyTorchModelHubMixin default (includes pickle warning)
-            super().save_pretrained(save_directory, **kwargs)
+        state_dict = self.state_dict()
+        safetensors_path = f"{save_directory}/model.safetensors"
+        save_file(state_dict, safetensors_path)
+        print(f"✅ Saved model weights in secure safetensors format: {safetensors_path}")
 
         # Save configuration
         config_path = f"{save_directory}/config.json"
@@ -270,23 +254,22 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
     
     @classmethod
     def from_pretrained(cls, model_id: str, **kwargs):
-        """Load model from Hugging Face Hub."""
+        """Load model from Hugging Face Hub using secure safetensors format."""
         from huggingface_hub import hf_hub_download
-        import os
 
-        # First download the config file
-        try:
-            config_path = hf_hub_download(model_id, "config.json")
-            with open(config_path, "r") as f:
-                config = json.load(f)
-        except:
-            config = cls().config  # Use default config if download fails
+        # Download the config file
+        config_path = hf_hub_download(model_id, "config.json")
+        with open(config_path, "r") as f:
+            config = json.load(f)
 
         # Create model instance with the loaded config
         model = cls(config=config)
 
-        # Load the model weights using PyTorchModelHubMixin
-        model = super().from_pretrained(model_id, **kwargs)
+        # Load model weights from safetensors file
+        safetensors_path = hf_hub_download(model_id, "model.safetensors")
+        state_dict = load_file(safetensors_path)
+        model.load_state_dict(state_dict)
+        print(f"✅ Loaded model weights from secure safetensors: {safetensors_path}")
 
         return model
 

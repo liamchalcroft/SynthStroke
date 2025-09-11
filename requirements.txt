@@ -7,3 +7,4 @@ tqdm>=4.65.0
 wandb>=0.15.0
 cornucopia>=0.1.0
 huggingface_hub>=0.20.0
+safetensors>=0.4.0
