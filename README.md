@@ -156,6 +156,7 @@ The `synthstroke_model.py` file provides a complete Python interface for using o
 ### Key Features
 
 - **PyTorchModelHubMixin Integration**: Seamless loading from Hugging Face Hub
+- **Secure Model Storage**: Uses safetensors format for enhanced security (no pickle warnings)
 - **Multiple Model Variants**: Support for all 6 model types (baseline, synth, synth_pseudo, synth_plus, qatlas, qsynth)
 - **Test-Time Augmentation**: Built-in flip-based TTA for improved accuracy
 - **Automatic Device Handling**: Smart GPU/CPU device management
@@ -255,6 +256,7 @@ predictions_with_tta = model.predict_segmentation(mri_volume, use_tta=True)
 - **Framework**: MONAI UNet with PyTorch
 - **Input**: 3D MRI volumes (T1-weighted for most models, qMRI parameters for qATLAS/qSynth)
 - **Architecture**: 3D UNet with configurable channels and strides
+- **Model Format**: Secure safetensors format (required, no pickle security warnings)
 - **Training**: Mixed precision (AMP) with custom loss functions
 - **Inference**: Optional Test-Time Augmentation support
 
