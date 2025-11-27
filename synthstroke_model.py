@@ -491,20 +491,31 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
                         is_ct: bool = False, 
                         device: Optional[Union[torch.device, str]] = None) -> Tuple[torch.Tensor, mn.transforms.Compose]:
         """Apply preprocessing pipeline."""
-        if isinstance(image_data, np.ndarray):
-            image_tensor = torch.from_numpy(image_data).float()
+        # Handle nibabel image objects - convert to numpy first
+        if hasattr(image_data, 'get_fdata'):
+            image_array = image_data.get_fdata()
+            if affine is None:
+                affine = image_data.affine
+        elif isinstance(image_data, np.ndarray):
+            image_array = image_data
+        elif isinstance(image_data, torch.Tensor):
+            image_array = image_data.cpu().numpy()
         else:
-            image_tensor = image_data.float()
+            raise TypeError(f"Unsupported image type: {type(image_data)}")
         
-        if image_tensor.dim() == 3:
-            image_tensor = image_tensor.unsqueeze(0)
+        # Convert to float32
+        image_array = image_array.astype(np.float32)
         
+        # Add channel dimension if 3D (H, W, D) -> (1, H, W, D)
+        if image_array.ndim == 3:
+            image_array = image_array[np.newaxis, ...]  # Add channel dimension at the beginning
+        
+        # Convert to tensor
+        image_tensor = torch.from_numpy(image_array)
         if device is not None:
             image_tensor = image_tensor.to(device)
         
-        if affine is not None:
-            image_tensor = MetaTensor(image_tensor, affine=affine)
-        
+        # Create batch dictionary
         batch = {"img": image_tensor}
         
         ct_clip = mn.transforms.LambdaD(
@@ -514,7 +525,6 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
         ) if is_ct else mn.transforms.Identity()
         
         preproc = mn.transforms.Compose([
-            mn.transforms.EnsureChannelFirstD(keys=["img"], allow_missing_keys=True),
             mn.transforms.ToTensorD(keys=["img"], device=device, allow_missing_keys=True),
             ct_clip,
             mn.transforms.OrientationD(keys=["img"], axcodes="RAS", allow_missing_keys=True),
@@ -524,6 +534,18 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
         ])
         
         batch = preproc(batch)
+        processed_img = batch["img"]
+        
+        # Add affine after preprocessing if provided and not already a MetaTensor
+        if affine is not None:
+            if isinstance(processed_img, MetaTensor):
+                # Update affine if it's already a MetaTensor
+                processed_img.affine = affine
+            else:
+                # Create MetaTensor with affine
+                processed_img = MetaTensor(processed_img, affine=affine)
+            batch["img"] = processed_img
+        
         return batch["img"], preproc
     
     def predict_comprehensive_with_preprocessing(self, image_data, affine=None, is_ct: bool = False, 
@@ -580,15 +602,64 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
             outputs_to_transform['predictive_entropy'] = predictive_entropy
         
         if hasattr(preproc_transforms, 'inverse') and hasattr(preprocessed_img, 'applied_operations'):
-            for key, tensor in outputs_to_transform.items():
-                if tensor is not None:
-                    tensor.applied_operations = preprocessed_img.applied_operations
-            
+            # Apply inverse transforms to restore original spatial dimensions
+            # Note: Multi-channel outputs (like probabilities) are skipped to avoid transform complexity
+            # They remain in the preprocessed space, which is still useful for analysis
             with mn.transforms.utils.allow_missing_keys_mode(preproc_transforms):
-                for key in outputs_to_transform:
+                for key in list(outputs_to_transform.keys()):  # Use list to allow modification during iteration
                     if outputs_to_transform[key] is not None:
-                        inverse_result = preproc_transforms.inverse({"img": outputs_to_transform[key]})
-                        outputs_to_transform[key] = inverse_result["img"]
+                        tensor = outputs_to_transform[key]
+                        
+                        # Skip inverse for multi-channel probabilities (too complex to transform per-channel)
+                        if key == 'probabilities' and tensor.dim() >= 4 and tensor.shape[0] > 1:
+                            # Keep probabilities in preprocessed space
+                            continue
+                        
+                        # Handle different tensor shapes
+                        # Remove batch dimension if present: (B, H, W, D) -> (H, W, D) or (B, C, H, W, D) -> (C, H, W, D)
+                        if tensor.dim() == 5:  # (B, C, H, W, D)
+                            tensor = tensor[0]  # (C, H, W, D)
+                        elif tensor.dim() == 4 and tensor.shape[0] != 1 and tensor.shape[0] <= 10:  # (B, H, W, D) with B > 1 but reasonable
+                            tensor = tensor[0]  # (H, W, D)
+                        
+                        # For remaining multi-channel tensors, skip inverse (too complex with MONAI transforms)
+                        if tensor.dim() == 4 and tensor.shape[0] > 1:
+                            # Skip inverse for multi-channel outputs - they remain in preprocessed space
+                            # This is acceptable as preprocessed space is still useful for analysis
+                            continue
+                        else:
+                            # Single channel - keep channel dimension for inverse transform
+                            # MONAI inverse expects (1, H, W, D) format
+                            if tensor.dim() == 3:  # (H, W, D) - add channel
+                                tensor = tensor.unsqueeze(0)  # (1, H, W, D)
+                            elif tensor.dim() == 4 and tensor.shape[0] != 1:  # (B, H, W, D) with B > 1
+                                tensor = tensor[0:1]  # (1, H, W, D) - keep first with channel
+                            
+                            # Ensure MetaTensor with applied_operations
+                            # Use deep copy to preserve transform tracking
+                            import copy
+                            if not isinstance(tensor, MetaTensor):
+                                # Deep copy applied_operations to preserve transform chain
+                                copied_ops = copy.deepcopy(preprocessed_img.applied_operations) if hasattr(preprocessed_img, 'applied_operations') else None
+                                tensor = MetaTensor(tensor, applied_operations=copied_ops)
+                            else:
+                                # Deep copy to preserve transform chain
+                                tensor.applied_operations = copy.deepcopy(preprocessed_img.applied_operations) if hasattr(preprocessed_img, 'applied_operations') else None
+                            
+                            inverse_result = preproc_transforms.inverse({"img": tensor})
+                            inv_img = inverse_result["img"]
+                            
+                            # Remove channel dimension after inverse: (1, H, W, D) -> (H, W, D)
+                            if isinstance(inv_img, torch.Tensor):
+                                if inv_img.dim() == 4 and inv_img.shape[0] == 1:
+                                    outputs_to_transform[key] = inv_img[0]  # (H, W, D)
+                                else:
+                                    outputs_to_transform[key] = inv_img
+                            else:  # numpy array
+                                if inv_img.ndim == 4 and inv_img.shape[0] == 1:
+                                    outputs_to_transform[key] = inv_img[0]  # (H, W, D)
+                                else:
+                                    outputs_to_transform[key] = inv_img
         
         final_results = {}
         for key, tensor in outputs_to_transform.items():
