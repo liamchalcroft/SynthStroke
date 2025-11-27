@@ -296,29 +296,38 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
         }
     
     def _needs_sliding_window(self, x: torch.Tensor, patch_size: int) -> bool:
-        """Check if sliding window inference is needed."""
+        """Check if sliding window inference is needed.
+
+        Sliding window is needed if:
+        1. Any dimension exceeds patch_size, OR
+        2. Any dimension is not divisible by 32 (UNet downsampling factor)
+        """
         _, _, H, W, D = x.shape
-        return H > patch_size or W > patch_size or D > patch_size
+        divisor = 32  # 2^5 for 5 stride-2 downsampling layers
+        size_exceeds = H > patch_size or W > patch_size or D > patch_size
+        not_divisible = (H % divisor != 0) or (W % divisor != 0) or (D % divisor != 0)
+        return size_exceeds or not_divisible
     
-    def _predict_with_sliding_window(self, x: torch.Tensor, apply_softmax: bool, 
+    def _predict_with_sliding_window(self, x: torch.Tensor, apply_softmax: bool,
                                     use_tta: bool, patch_size: int) -> torch.Tensor:
         """Perform sliding window inference."""
         window = self._get_sliding_window_inferer(patch_size)
         all_predictions = []
-        
+
         for i in range(x.shape[0]):
             img = x[i:i+1]
-            
+
             if use_tta:
                 def inference_fn(input_tensor):
-                    return window(input_tensor, self)[0]
+                    # Keep batch dimension for TTA flip operations
+                    return window(input_tensor, self)
                 pred = self._generate_tta_predictions(img, inference_fn)
             else:
-                pred = window(img, self)[0]
-            
+                pred = window(img, self)
+
             all_predictions.append(pred)
-        
-        predictions = torch.stack(all_predictions, dim=0)
+
+        predictions = torch.cat(all_predictions, dim=0)
         return torch.softmax(predictions, dim=1) if apply_softmax else predictions
     
     def _predict_with_tta(self, x: torch.Tensor, apply_softmax: bool) -> torch.Tensor:
