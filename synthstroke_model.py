@@ -14,6 +14,7 @@ from monai.networks.nets import UNet
 from monai.data import MetaTensor
 from safetensors.torch import save_file, load_file
 from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
+import nibabel as nib
 
 
 class ModelConstants:
@@ -694,6 +695,249 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
     def input_shape(self) -> Tuple[int, int, int, int]:
         """Get expected input shape (excluding batch dimension)."""
         return (self.config.in_channels, -1, -1, -1)
+    
+    @staticmethod
+    def save_prediction_to_disk(
+        prediction_data: Union[PredictionResult, MCPredictionResult, Dict[str, Any]],
+        output_dir: Union[str, Path],
+        base_filename: str = "prediction",
+        affine: Optional[np.ndarray] = None,
+        save_probabilities: bool = True,
+        save_lesion_mask: bool = True,
+        save_uncertainty: bool = True,
+        dtype: Optional[np.dtype] = None
+    ) -> Dict[str, str]:
+        """
+        Save prediction outputs to disk as NIfTI files.
+        
+        Args:
+            prediction_data: PredictionResult, MCPredictionResult, or dictionary from 
+                           predict_comprehensive_with_preprocessing
+            output_dir: Directory to save output files
+            base_filename: Base name for output files (without extension)
+            affine: Affine transformation matrix (4x4). If None, uses identity or 
+                   extracts from MetaTensor if available
+            save_probabilities: Whether to save probability maps
+            save_lesion_mask: Whether to save lesion mask
+            save_uncertainty: Whether to save uncertainty maps (if available)
+            dtype: Data type for saved files (default: int16 for masks, float32 for probabilities)
+            
+        Returns:
+            Dictionary mapping output type to saved file path
+            
+        Example:
+            >>> result = model.predict_comprehensive(image)
+            >>> saved_files = SynthStrokeModel.save_prediction_to_disk(
+            ...     result, 
+            ...     output_dir="./outputs",
+            ...     base_filename="patient_001"
+            ... )
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        saved_files = {}
+        
+        # Extract data based on input type
+        if isinstance(prediction_data, (PredictionResult, MCPredictionResult)):
+            prediction = prediction_data.prediction
+            probabilities = prediction_data.probabilities
+            lesion_mask = prediction_data.lesion_mask
+            
+            # Extract uncertainty maps if available
+            if isinstance(prediction_data, MCPredictionResult):
+                prediction_std = prediction_data.prediction_std
+                epistemic_uncertainty = prediction_data.epistemic_uncertainty
+                predictive_entropy = prediction_data.predictive_entropy
+            else:
+                prediction_std = None
+                epistemic_uncertainty = None
+                predictive_entropy = None
+                
+            # Extract affine from metadata if available
+            if affine is None and hasattr(prediction_data, 'metadata'):
+                metadata = prediction_data.metadata
+                if metadata and 'affine' in metadata:
+                    affine = metadata['affine']
+        elif isinstance(prediction_data, dict):
+            prediction = prediction_data.get('prediction')
+            probabilities = prediction_data.get('probabilities')
+            lesion_mask = prediction_data.get('lesion_mask')
+            prediction_std = prediction_data.get('prediction_std')
+            epistemic_uncertainty = prediction_data.get('epistemic_uncertainty')
+            predictive_entropy = prediction_data.get('predictive_entropy')
+        else:
+            raise TypeError(
+                f"Expected PredictionResult, MCPredictionResult, or dict, "
+                f"got {type(prediction_data).__name__}"
+            )
+        
+        # Convert tensors to numpy arrays
+        def to_numpy(tensor_or_array):
+            if tensor_or_array is None:
+                return None
+            if isinstance(tensor_or_array, torch.Tensor):
+                arr = tensor_or_array.detach().cpu().numpy()
+            elif isinstance(tensor_or_array, np.ndarray):
+                arr = tensor_or_array
+            else:
+                raise TypeError(f"Expected torch.Tensor or np.ndarray, got {type(tensor_or_array).__name__}")
+            
+            # Remove batch and channel dimensions if present
+            if arr.ndim == 5:  # (B, C, H, W, D)
+                arr = arr[0]  # Remove batch
+                if arr.shape[0] == 1:  # Single channel
+                    arr = arr[0]  # Remove channel
+                else:
+                    # Multi-channel: keep channel dimension
+                    pass
+            elif arr.ndim == 4:  # (C, H, W, D) or (B, H, W, D)
+                if arr.shape[0] == 1:  # Single channel or batch
+                    arr = arr[0]
+                else:
+                    # Multi-channel: keep channel dimension
+                    pass
+            elif arr.ndim == 3:  # (H, W, D)
+                pass  # Already 3D
+            else:
+                raise ValueError(f"Unexpected array shape: {arr.shape}")
+            
+            return arr
+        
+        # Helper function to save NIfTI file
+        def save_nifti(data: np.ndarray, filename: str, affine_matrix: Optional[np.ndarray] = None, 
+                      output_dtype: Optional[np.dtype] = None) -> str:
+            if output_dtype is not None:
+                data = data.astype(output_dtype)
+            
+            if affine_matrix is None:
+                affine_matrix = np.eye(4)
+            
+            nii_img = nib.Nifti1Image(data, affine_matrix)
+            filepath = output_dir / filename
+            nib.save(nii_img, str(filepath))
+            return str(filepath)
+        
+        # Get affine from MetaTensor if available
+        extracted_affine = None
+        if affine is None:
+            # Try to extract from any tensor that might be a MetaTensor
+            for tensor in [prediction, probabilities, lesion_mask]:
+                if tensor is not None and hasattr(tensor, 'affine'):
+                    extracted_affine = tensor.affine
+                    break
+        
+        final_affine = affine if affine is not None else extracted_affine
+        
+        # Save prediction (discrete segmentation)
+        if prediction is not None:
+            pred_array = to_numpy(prediction)
+            pred_dtype = dtype if dtype is not None else np.int16
+            saved_files['prediction'] = save_nifti(
+                pred_array, 
+                f"{base_filename}_prediction.nii.gz",
+                final_affine,
+                pred_dtype
+            )
+        
+        # Save probabilities
+        if save_probabilities and probabilities is not None:
+            prob_array = to_numpy(probabilities)
+            # For multi-class probabilities, save each class separately
+            if prob_array.ndim == 4:  # (C, H, W, D)
+                for class_idx in range(prob_array.shape[0]):
+                    class_prob = prob_array[class_idx]
+                    saved_files[f'probability_class_{class_idx}'] = save_nifti(
+                        class_prob,
+                        f"{base_filename}_prob_class_{class_idx}.nii.gz",
+                        final_affine,
+                        np.float32
+                    )
+            else:  # Single channel
+                saved_files['probabilities'] = save_nifti(
+                    prob_array,
+                    f"{base_filename}_probabilities.nii.gz",
+                    final_affine,
+                    np.float32
+                )
+        
+        # Save lesion mask
+        if save_lesion_mask and lesion_mask is not None:
+            mask_array = to_numpy(lesion_mask)
+            mask_dtype = dtype if dtype is not None else np.int16
+            saved_files['lesion_mask'] = save_nifti(
+                mask_array,
+                f"{base_filename}_lesion_mask.nii.gz",
+                final_affine,
+                mask_dtype
+            )
+        
+        # Save uncertainty maps (if available)
+        if save_uncertainty:
+            if prediction_std is not None:
+                std_array = to_numpy(prediction_std)
+                if std_array.ndim == 4:  # Multi-channel
+                    # Save mean std across classes
+                    std_array = np.mean(std_array, axis=0)
+                saved_files['prediction_std'] = save_nifti(
+                    std_array,
+                    f"{base_filename}_prediction_std.nii.gz",
+                    final_affine,
+                    np.float32
+                )
+            
+            if epistemic_uncertainty is not None:
+                unc_array = to_numpy(epistemic_uncertainty)
+                if unc_array.ndim == 4:  # Multi-channel
+                    unc_array = np.mean(unc_array, axis=0)
+                saved_files['epistemic_uncertainty'] = save_nifti(
+                    unc_array,
+                    f"{base_filename}_epistemic_uncertainty.nii.gz",
+                    final_affine,
+                    np.float32
+                )
+            
+            if predictive_entropy is not None:
+                entropy_array = to_numpy(predictive_entropy)
+                if entropy_array.ndim == 4:  # Multi-channel
+                    entropy_array = entropy_array[0]  # Usually single channel
+                saved_files['predictive_entropy'] = save_nifti(
+                    entropy_array,
+                    f"{base_filename}_predictive_entropy.nii.gz",
+                    final_affine,
+                    np.float32
+                )
+        
+        return saved_files
+    
+    def save_prediction(self, prediction_data: Union[PredictionResult, MCPredictionResult, Dict[str, Any]],
+                       output_dir: Union[str, Path], base_filename: str = "prediction",
+                       affine: Optional[np.ndarray] = None, save_probabilities: bool = True,
+                       save_lesion_mask: bool = True, save_uncertainty: bool = True,
+                       dtype: Optional[np.dtype] = None) -> Dict[str, str]:
+        """
+        Instance method wrapper for save_prediction_to_disk.
+        
+        See save_prediction_to_disk for full documentation.
+        
+        Example:
+            >>> result = model.predict_comprehensive(image)
+            >>> saved_files = model.save_prediction(
+            ...     result, 
+            ...     output_dir="./outputs",
+            ...     base_filename="patient_001"
+            ... )
+        """
+        return self.save_prediction_to_disk(
+            prediction_data=prediction_data,
+            output_dir=output_dir,
+            base_filename=base_filename,
+            affine=affine,
+            save_probabilities=save_probabilities,
+            save_lesion_mask=save_lesion_mask,
+            save_uncertainty=save_uncertainty,
+            dtype=dtype
+        )
 
 
 # Convenience functions for different model types
