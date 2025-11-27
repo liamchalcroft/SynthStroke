@@ -410,17 +410,31 @@ class SynthStrokeModel(torch.nn.Module, PyTorchModelHubMixin):
     
     def _validate_and_prepare_input(self, x: Union[torch.Tensor, np.ndarray]) -> torch.Tensor:
         """Validate and prepare input tensor."""
+        # Handle nibabel image objects
+        if hasattr(x, 'get_fdata'):
+            x = x.get_fdata()
+
         if isinstance(x, np.ndarray):
-            x = torch.from_numpy(x).float()
-        
-        if x.dim() == 4:
+            x = torch.from_numpy(x.astype(np.float32))
+
+        if not isinstance(x, torch.Tensor):
+            raise TypeError(
+                f"Expected torch.Tensor, np.ndarray, or nibabel image, got {type(x).__name__}. "
+                "If using nibabel, pass nib.load(path).get_fdata() or the nibabel object directly."
+            )
+
+        if x.dim() == 3:
+            # Add channel and batch dimensions: (H,W,D) -> (1,1,H,W,D)
+            x = x.unsqueeze(0).unsqueeze(0)
+        elif x.dim() == 4:
+            # Add batch dimension: (C,H,W,D) -> (1,C,H,W,D)
             x = x.unsqueeze(0)
         elif x.dim() != 5:
-            raise ValueError(f"Expected 4D or 5D tensor, got {x.dim()}D")
-        
+            raise ValueError(f"Expected 3D, 4D or 5D tensor, got {x.dim()}D")
+
         if x.shape[1] != self.config.in_channels:
             raise ValueError(f"Expected {self.config.in_channels} channels, got {x.shape[1]}")
-        
+
         return x.to(self.device)
     
     def predict_comprehensive(self, x: Union[torch.Tensor, np.ndarray], 
